@@ -7,11 +7,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Readable } from "node:stream";
 
-const ROOT = path.resolve(new URL(".", import.meta.url).pathname, "..");
-if (process.platform === "win32" && ROOT.startsWith("/")) {
-  // file URL pathname fix on Windows (C:/...)
-}
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 function loadEnvFile(p) {
   if (!fs.existsSync(p)) return;
@@ -105,9 +104,9 @@ async function ensureCloudflared() {
   if (!res.ok || !res.body) throw new Error("cloudflared download failed");
   const file = fs.createWriteStream(bin);
   await new Promise((resolve, reject) => {
-    res.body.pipe(file);
-    res.body.on("error", reject);
+    Readable.fromWeb(res.body).pipe(file);
     file.on("finish", resolve);
+    file.on("error", reject);
   });
   console.log("cloudflared ready.");
   return bin;
