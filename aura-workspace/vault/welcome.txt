@@ -1,0 +1,8 @@
+Welcome to AURA Workspace v0.1.
+
+This file proves end-to-end download works:
+login -> list vault -> download this file.
+
+Vault root is set by AURA_VAULT (default ./vault).
+Only files under this folder are ever visible to the web.
+Symlinks escaping the vault are rejected.

@@ -1,0 +1,3 @@
+physics half-yearly notes — sample file.
+Put your real notes in AURA_VAULT and search "physics" in the dashboard.
+This is the file-API fast path: no desktop streaming needed to fetch one PDF.

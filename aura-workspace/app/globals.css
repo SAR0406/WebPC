@@ -1,0 +1,55 @@
+:root {
+  --bg: #0b0f17;
+  --panel: #131a26;
+  --line: #243049;
+  --text: #e8eef7;
+  --muted: #93a1b8;
+  --accent: #5cc8ff;
+  --danger: #ff6b6b;
+  --ok: #51e08c;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 20% -10%, #16233a 0%, var(--bg) 55%) fixed, var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial, sans-serif;
+}
+a { color: var(--accent); }
+.wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.35);
+}
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+input, button {
+  font: inherit;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+}
+input { background: #0d1420; color: var(--text); min-width: 0; }
+input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+button {
+  background: var(--accent);
+  border-color: transparent;
+  color: #04222f;
+  font-weight: 700;
+  cursor: pointer;
+}
+button.ghost { background: transparent; color: var(--text); border-color: var(--line); }
+button.danger { background: var(--danger); color: #2b0606; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 12px var(--ok); }
+.dot.bad { background: var(--danger); box-shadow: 0 0 12px var(--danger); }
+.err { color: var(--danger); margin-top: 10px; }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
+.crumb button { margin-right: 6px; margin-bottom: 6px; }
+code { background: #0d1420; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); }

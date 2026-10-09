@@ -1,0 +1,9 @@
+node_modules/
+.next/
+data/
+!.env.example
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
