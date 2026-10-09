@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb, audit } from "@/lib/db";
+import { store } from "@/lib/store";
 import { verifyPassword, newSessionToken, sessionExpiry, deviceLabel, SESSION_COOKIE, SESSION_HOURS } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { clientIp } from "@/lib/session";
@@ -17,30 +17,49 @@ export async function POST(req: NextRequest) {
   }
   const username = String(body.username || "").trim().toLowerCase();
   const password = String(body.password || "");
-  const db = getDb();
-  const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as any;
+  let user;
+  try {
+    user = await store.findUserByUsername(username);
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Cloud database unreachable." },
+      { status: 503 }
+    );
+  }
   // Constant-time-ish: always verify something to avoid user enumeration timing
   const ok = user ? await verifyPassword(password, user.pass_hash, user.pass_salt) : false;
   if (!user || !ok) {
-    audit("auth.login.fail", username, user?.id ?? null, ip);
+    store.audit("auth.login.fail", username, user?.id ?? null, ip);
     return NextResponse.json({ error: "Invalid username or password." }, { status: 401 });
   }
   const ua = req.headers.get("user-agent") || "";
   const label = deviceLabel(ua);
-  // Record device (auto-approve LAN/localhost, pending otherwise — v0.1 simple rule:
-  // first device auto-approved, later ones pending until approved on host)
-  const devCount = (db.prepare("SELECT COUNT(*) as c FROM devices WHERE user_id = ?").get(user.id) as any).c as number;
-  const status = devCount === 0 ? "approved" : "approved"; // v0.1: approve all, approval queue lands in 0.1.x
-  db.prepare(
-    "INSERT INTO devices (user_id, label, ip, ua, status, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(user.id, label, ip, ua.slice(0, 300), status, new Date().toISOString());
+  try {
+    await store.insertDevice({
+      user_id: user.id,
+      label,
+      ip,
+      ua: ua.slice(0, 300),
+      status: "approved", // v0.1: approve all, approval queue lands in 0.1.x
+    });
+  } catch {
+    // device log is best-effort
+  }
 
   const token = newSessionToken();
-  const now = new Date().toISOString();
-  db.prepare(
-    "INSERT INTO sessions (id, user_id, device_label, ip, ua, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(token, user.id, label, ip, ua.slice(0, 300), now, sessionExpiry().toISOString());
-  audit("auth.login", label, user.id, ip);
+  try {
+    await store.createSession({
+      id: token,
+      user_id: user.id,
+      device_label: label,
+      ip,
+      ua: ua.slice(0, 300),
+      expires_at: sessionExpiry().toISOString(),
+    });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "Login failed." }, { status: 500 });
+  }
+  store.audit("auth.login", label, user.id, ip);
 
   const res = NextResponse.json({ ok: true, username: user.username, device: label });
   res.cookies.set(SESSION_COOKIE, token, {

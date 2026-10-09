@@ -15,6 +15,12 @@ function joinPath(base: string, name: string) {
   return `${base}/${name}`;
 }
 
+// On Vercel (NEXT_PUBLIC_CLOUD=1) file traffic goes through /api/remote/*,
+// which proxies to the home PC over its tunnel. Locally it hits /api/* direct.
+const CLOUD = process.env.NEXT_PUBLIC_CLOUD === "1";
+const FILES_API = CLOUD ? "/api/remote/files" : "/api/files";
+const STATUS_API = CLOUD ? "/api/remote/status" : "/api/agent/status";
+
 export default function Files() {
   const router = useRouter();
   const [user, setUser] = useState("");
@@ -28,7 +34,7 @@ export default function Files() {
 
   const load = useCallback(async (p: string, query: string) => {
     setErr("");
-    const r = await fetch(`/api/files?path=${encodeURIComponent(p)}&q=${encodeURIComponent(query)}`);
+    const r = await fetch(`${FILES_API}?path=${encodeURIComponent(p)}&q=${encodeURIComponent(query)}`);
     const j = await r.json();
     if (!r.ok) {
       if (r.status === 401) router.replace("/login");
@@ -43,13 +49,13 @@ export default function Files() {
       const j = await r.json();
       setUser(j.user.username);
     });
-    fetch("/api/agent/status")
+    fetch(STATUS_API)
       .then((r) => r.json())
       .then(setStatus)
       .catch(() => setStatus({ online: false }));
     load("/", "").catch((e) => setErr(e.message));
     const t = setInterval(() => {
-      fetch("/api/agent/status").then((r) => r.json()).then(setStatus).catch(() => {});
+      fetch(STATUS_API).then((r) => r.json()).then(setStatus).catch(() => {});
     }, 15000);
     return () => clearInterval(t);
   }, [load, router]);
@@ -62,7 +68,7 @@ export default function Files() {
   async function download(name: string) {
     setErr("");
     const p = joinPath(path, name);
-    const r = await fetch(`/api/files/download?path=${encodeURIComponent(p)}`);
+    const r = await fetch(`${FILES_API}/download?path=${encodeURIComponent(p)}`);
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       setErr(j.error || "Download failed.");
@@ -86,7 +92,7 @@ export default function Files() {
     try {
       const fd = new FormData();
       fd.append("file", f);
-      const r = await fetch(`/api/files/upload?path=${encodeURIComponent(path)}`, { method: "POST", body: fd });
+      const r = await fetch(`${FILES_API}/upload?path=${encodeURIComponent(path)}`, { method: "POST", body: fd });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "Upload failed.");
       await load(path, q);

@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { getUserBySession, clientIp } from "@/lib/session";
 import { SESSION_COOKIE } from "@/lib/auth";
+import { getUserBySession, clientIp } from "@/lib/session";
+import { checkAccess } from "@/lib/guard";
 import { resolveSafePath } from "@/lib/files";
-import { audit } from "@/lib/db";
+import { store } from "@/lib/store";
 
 export async function POST(req: NextRequest) {
-  const user = getUserBySession(req.cookies.get(SESSION_COOKIE)?.value);
-  if (!user) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
+  const access = await checkAccess(req);
+  if (!access) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
   const url = new URL(req.url);
   const dir = url.searchParams.get("path") || "/";
   const form = await req.formData().catch(() => null);
@@ -29,7 +30,10 @@ export async function POST(req: NextRequest) {
     await resolveSafePath(path.relative(process.cwd(), target).startsWith("..") ? "/" + safeName : (dir === "/" ? "/" + safeName : dir + "/" + safeName));
     const buf = Buffer.from(await file.arrayBuffer());
     await fsp.writeFile(target, buf);
-    audit("file.upload", `${dir}/${safeName} (${file.size}b)`, user.id, clientIp(req));
+    const user = "user" in access
+      ? access.user
+      : await getUserBySession(req.cookies.get(SESSION_COOKIE)?.value);
+    store.audit("file.upload", `${dir}/${safeName} (${file.size}b)`, user?.id ?? null, clientIp(req));
     return NextResponse.json({ ok: true, name: safeName, size: file.size });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Upload failed." }, { status: 400 });

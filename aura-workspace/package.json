@@ -7,7 +7,10 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "init:admin": "node scripts/init-admin.mjs"
+    "init:admin": "node scripts/init-admin.mjs",
+    "admin:create": "node scripts/create-admin.mjs",
+    "agent": "node agent/run.mjs",
+    "agent:setup": "node scripts/agent-setup.mjs"
   },
   "dependencies": {
     "next": "^15.5.4",

@@ -1,8 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import os from "node:os";
+import { checkAccess } from "@/lib/guard";
 import { vaultRoot } from "@/lib/files";
 
-export async function GET() {
+// Home-gateway status. Guarded by session cookie OR agent secret, so the
+// Vercel app can poll it through the tunnel without exposing it publicly.
+export async function GET(req: NextRequest) {
+  const access = await checkAccess(req);
+  if (!access) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
   let vault = "";
   let vaultOk = false;
   try {

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "node:fs";
 import path from "node:path";
-import { getUserBySession, clientIp } from "@/lib/session";
 import { SESSION_COOKIE } from "@/lib/auth";
+import { getUserBySession, clientIp } from "@/lib/session";
+import { checkAccess } from "@/lib/guard";
 import { getAgent } from "@/lib/files";
-import { audit } from "@/lib/db";
+import { store } from "@/lib/store";
 
 const MIME: Record<string, string> = {
   ".pdf": "application/pdf",
@@ -20,8 +21,8 @@ const MIME: Record<string, string> = {
 };
 
 export async function GET(req: NextRequest) {
-  const user = getUserBySession(req.cookies.get(SESSION_COOKIE)?.value);
-  if (!user) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
+  const access = await checkAccess(req);
+  if (!access) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
   const url = new URL(req.url);
   const rel = url.searchParams.get("path") || "";
   if (!rel || rel === "/") {
@@ -42,7 +43,10 @@ export async function GET(req: NextRequest) {
         stream.destroy();
       },
     });
-    audit("file.download", `${rel} (${size}b)`, user.id, clientIp(req));
+    const user = "user" in access
+      ? access.user
+      : await getUserBySession(req.cookies.get(SESSION_COOKIE)?.value);
+    store.audit("file.download", `${rel} (${size}b)`, user?.id ?? null, clientIp(req));
     return new NextResponse(webStream as any, {
       headers: {
         "Content-Type": MIME[ext] || "application/octet-stream",

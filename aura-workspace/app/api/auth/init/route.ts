@@ -1,12 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb, audit } from "@/lib/db";
+import { store } from "@/lib/store";
 import { hashPassword } from "@/lib/auth";
 import { clientIp } from "@/lib/session";
 
 // First-run admin creation. Disabled once any user exists.
 export async function POST(req: NextRequest) {
-  const db = getDb();
-  const count = (db.prepare("SELECT COUNT(*) as c FROM users").get() as any).c as number;
+  let count = 0;
+  try {
+    count = await store.countUsers();
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Cloud database unreachable." },
+      { status: 503 }
+    );
+  }
   if (count > 0) {
     return NextResponse.json({ error: "Already initialized. Use login." }, { status: 403 });
   }
@@ -25,15 +32,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Password must be at least 10 characters." }, { status: 400 });
   }
   const { hash, salt } = await hashPassword(password);
-  db.prepare(
-    "INSERT INTO users (username, pass_hash, pass_salt, created_at) VALUES (?, ?, ?, ?)"
-  ).run(username, hash, salt, new Date().toISOString());
-  audit("auth.init", `admin ${username} created`, null, clientIp(req));
+  try {
+    await store.createUser(username, hash, salt);
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || "Create failed." }, { status: 500 });
+  }
+  store.audit("auth.init", `admin ${username} created`, null, clientIp(req));
   return NextResponse.json({ ok: true, username });
 }
 
 export async function GET() {
-  const db = getDb();
-  const count = (db.prepare("SELECT COUNT(*) as c FROM users").get() as any).c as number;
-  return NextResponse.json({ initialized: count > 0 });
+  try {
+    const count = await store.countUsers();
+    return NextResponse.json({ initialized: count > 0 });
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Cloud database unreachable." },
+      { status: 503 }
+    );
+  }
 }
