@@ -1,52 +1,47 @@
-# AURA Workspace — v0.1 Personal Portal
+# AURA Workspace — your personal computer, accessible from anywhere
 
 > Open one website on any computer you are allowed to use. Your digital workspace comes with you.
 
-v0.1 vertical slice: **password login (no Google) → host online status → list one approved folder → secure download.** Nothing to install on the school computer. Home PC runs one Node process.
+No Google login. No USB. Nothing to install on the school computer. The home PC does the heavy work; the site is your command center.
 
-## Quick start (home PC)
+## What works today
+
+- **Command deck** (`/files` top bar): `find physics` searches the whole vault, `open notes` previews the best match, `download backup` fetches it, `desktop` jumps to screen share, `pin / mkdir / rename` manage files. Read-only by default; writes need explicit commands.
+- **Memory vault**: browse, filter, PDF/image/text previews in a sandboxed modal, downloads with **resume** (HTTP Range), uploads over 8MB **resume automatically** in 1MB chunks.
+- **Pinned projects**: `pin` command or Deck; one-click jump, unpin anytime.
+- **Live desktop** (`/desktop`): full screen share in the browser with mouse/keyboard control, YouTube-style quality (Auto/720p/720p60/1080p/Highest), live stats (RTT/fps/bitrate), explicit two-way clipboard, auto quality that steps down on bad networks.
+- **Personal security**: password + scrypt, short sessions, school-computer 30-minute sessions with countdown + auto-logout, device log, one-click **kill switch** (revokes sessions AND drops the tunnel).
+- **Connection quality**: latency dot next to Online status everywhere.
+
+## Run it (home PC)
 
 ```powershell
 cd aura-workspace
 npm install
-copy .env.example .env.local
-# set AURA_VAULT to your real folder, e.g. AURA_VAULT=F:/AURA_Vault
-npm run dev
-# first run only — 10+ char password:
-npm run init:admin -- --username=aura --password=YOUR_LONG_PASSWORD_HERE
-# open http://localhost:3000/login
+# .env.local needs: SUPABASE_URL, SUPABASE_ANON_KEY, AURA_VAULT=./vault
+npm run dev            # gateway + dashboard  (terminal 1)
+npm run agent          # free Cloudflare tunnel + heartbeat (terminal 2)
+npm run desktop        # screen-share streamer (terminal 3, needs pip pkgs below)
 ```
 
-School test checklist:
+```powershell
+# first time only
+$env:AURA_USERNAME='sarthak'; $env:AURA_PASSWORD='...'
+npm run admin:create   # creates the login
+npm run agent:setup    # pairs this PC, prints Vercel env vars
+C:\...\Python312\python.exe -m pip install -r agent\requirements-desktop.txt
+```
 
-1. Expose `http://localhost:3000` via Cloudflare Tunnel (`cloudflared tunnel --url http://localhost:3000`) or Tailscale. No router port-forward of RDP.
-2. On school browser open the tunnel URL → `/login`. No install, no Google button.
-3. Log in, see green Online dot + hostname.
-4. Open vault, search `physics`, download `physics-half-yearly-notes.txt`. Byte-identical.
-5. Upload a small file. Try `../../` paths — must be rejected.
-6. Press Kill switch — all sessions log out immediately.
+## Deploy (Vercel)
 
-## Design (fits i3 / 8GB, $0)
+1. Run `supabase-setup.sql` once in your Supabase SQL Editor.
+2. Push this folder's git repo; set Vercel project root to `aura-workspace` if needed.
+3. Vercel env vars: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `AGENT_SECRET` (from setup), `NEXT_PUBLIC_CLOUD=1`, `AURA_VAULT=/tmp/aura-vault`.
+4. Redeploy. Log in as `sarthak` from any browser.
 
-- Single Next.js process serves dashboard + API. No Docker, no VPS, no indexer in v0.1.
-- Auth: scrypt-hashed password, opaque session cookie (`httpOnly`, `SameSite=Lax`), 12h expiry, login rate-limit 5/10min, device log, `revoke-all` kill switch. TOTP columns already in schema for 0.1.x.
-- Files: `LocalAgent` behind `AgentClient` interface. `GET /api/files`, `GET /api/files/download` (stream), `POST /api/files/upload` (100MB cap). `resolveSafePath` blocks traversal + escaping symlinks. Audit log for login/download/upload.
-- DB: `node:sqlite` file at `data/aura.db` (zero deps). Tables: users, sessions, devices, audit.
+## Honest limits
 
-## API
-
-- `GET/POST /api/auth/init` — first-run admin
-- `POST /api/auth/login|logout` `GET /api/auth/me` `POST /api/auth/revoke-all`
-- `GET /api/agent/status` — online, host, RAM, vault path
-- `GET /api/files?path=/&q=` `GET /api/files/download?path=` `POST /api/files/upload?path=/`
-- `GET /api/devices` — recent devices + sessions
-
-## Limits (honest)
-
-- Home PC must be awake. Offline files need sync (0.3).
-- $0 P2P 40-60ms desktop needs school UDP allowed; blocked networks fall back to slower TCP in 0.2.
+- Screen share is P2P WebRTC over UDP. School networks that block UDP need a TURN relay (a ~$4/mo upgrade); the UI says so instead of spinning forever.
+- Home i3 encodes 720p30 in software (~16ms/frame). Highest 1080p60 will auto-step-down; that is the hardware telling the truth, not a bug.
+- Home PC must be awake. Offline files need sync (planned).
 - Do not use to evade school policy if remote-access tools are prohibited.
-
-## Next (0.2 Live Desktop)
-
-LAN WebRTC prototype with QuickSync H.264, Auto/Highest quality switch, stats overlay — only after this slice passes the checklist above.
