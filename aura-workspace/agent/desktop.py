@@ -294,9 +294,11 @@ async def serve_offer(code, offer_b64):
             after = max(after, r["id"])
             if r["kind"] == "ice-viewer":
                 try:
-                    await pc.addIceCandidate(candidate_from_json(json.loads(r["payload"])))
-                except Exception:
-                    pass
+                    o = json.loads(r["payload"])
+                    if o.get("ip") and o.get("port"):
+                        await pc.addIceCandidate(candidate_from_json(o))
+                except Exception as e:
+                    print(f"[ice] skip candidate: {e}", flush=True)
             elif r["kind"] == "bye":
                 closed.set()
     await pc.close()
@@ -320,8 +322,9 @@ async def main():
             print(f"[session] viewer joined ({o['code'][:8]}…)", flush=True)
             try:
                 await serve_offer(o["code"], o["payload"])
-            except Exception as e:
-                print(f"[session] error: {e}", flush=True)
+            except Exception:
+                import traceback
+                traceback.print_exc()
                 await cleanup(o["code"])
             print("[agent] waiting for viewers…", flush=True)
 
