@@ -29,8 +29,13 @@ npm run desktop        # screen-share streamer (terminal 3, needs pip pkgs below
 $env:AURA_USERNAME='sarthak'; $env:AURA_PASSWORD='...'
 npm run admin:create   # creates the login
 npm run agent:setup    # pairs this PC, prints Vercel env vars
+$env:AURA_HOST_PIN='choose-6-plus-chars'; npm run host:pin  # PIN for desktop access
 C:\...\Python312\python.exe -m pip install -r agent\requirements-desktop.txt
 ```
+
+Optional: `AURA_ICE='[{"urls":"turn:host:3478","username":"u","credential":"p"}]'`
+in `.env.local` (+ same as `NEXT_PUBLIC_ICE` on Vercel) if a school network blocks
+direct UDP. `AURA_LOCK_ON_DISCONNECT=1` locks the PC when a desktop session ends.
 
 ## Deploy (Vercel)
 

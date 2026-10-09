@@ -132,7 +132,7 @@ async def main():
     after = 0
     answered = False
     t0 = time.monotonic()
-    while time.monotonic() - t0 < 25 and not (answered and got_channel.is_set() and frames):
+    while time.monotonic() - t0 < 40 and not (answered and got_channel.is_set() and len(frames) >= 30):
         rows = sb("GET", f"/aura_signals?code=eq.{code}&user_id=eq.{USER_ID}"
                          f"&id=gt.{after}&select=id,kind,payload&order=id.asc&limit=100") or []
         for r in rows:
@@ -152,7 +152,7 @@ async def main():
 
     ok = answered and len(frames) >= 30
     # exercise control plane: profile switch + input + clipboard fetch
-    if got_channel.is_set():
+    if got_channel.is_set() and ok:
         dc.send(json.dumps({"t": "profile", "name": "720p"}))
         await asyncio.sleep(1)
         dc.send(json.dumps({"t": "move", "x": 0.5, "y": 0.5}))
@@ -173,6 +173,7 @@ async def main():
     await pc.close()
     sb("DELETE", f"/aura_signals?code=eq.{code}&user_id=eq.{USER_ID}")
 
+    ok = answered and len(frames) >= 30 and clip_ok
     if ok:
         print("LOOPBACK PASS")
     else:
