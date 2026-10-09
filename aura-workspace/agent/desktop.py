@@ -452,6 +452,13 @@ async def serve_offer(code, offer_b64):
 
 async def main():
     print(f"[agent] desktop streamer up (user {USER_ID}). Waiting for viewers…", flush=True)
+    # drop stale signaling rows (old offers/answers from killed sessions)
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: sb("DELETE", f"/aura_signals?user_id=eq.{USER_ID}"))
+        print("[agent] cleared stale signals", flush=True)
+    except Exception:
+        pass
     seen_offer = 0
     while True:
         try:
