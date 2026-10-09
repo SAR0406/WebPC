@@ -24,6 +24,11 @@ import av
 from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc import RTCConfiguration, RTCIceServer
 
+try:
+    from aiortc.mediastreams import VIDEO_CLOCK_RATE
+except ImportError:
+    VIDEO_CLOCK_RATE = 90000
+
 # ---------------------------------------------------------------- env
 
 def load_env(path):
@@ -132,80 +137,37 @@ class ScreenTrack(MediaStreamTrack):
         self.host_w, self.host_h = self.mon["width"], self.mon["height"]
         self.input = Input(self.host_w, self.host_h)
         self.profile_name = "auto"
-        self.encoder = None
-        self.codec = None
-        self._new_encoder()
+        self._pts = 0
         self._last = 0.0
-
-    def _new_encoder(self):
         p = PROFILES[self.profile_name]
-        # NOTE: av.CodecContext has no close(); dropping the reference frees it.
-        self.encoder = None
-        for name in list(_CODEC_ORDER):
-            try:
-                ctx = av.CodecContext.create(name, "w")
-            except Exception:
-                try:
-                    _CODEC_ORDER.remove(name)
-                except ValueError:
-                    pass
-                ctx = None
-                continue
-            try:
-                ctx.width, ctx.height = p["w"], p["h"]
-                ctx.framerate = fractions.Fraction(p["fps"], 1)
-                ctx.bit_rate = p["bps"]
-                ctx.gop_size = p["fps"] * 2
-                ctx.max_b_frames = 0
-                ctx.pix_fmt = "yuv420p"
-                if name == "libx264":
-                    ctx.options = {"preset": "ultrafast", "tune": "zerolatency"}
-                ctx.open()
-                break
-            except Exception:
-                try:
-                    _CODEC_ORDER.remove(name)
-                except ValueError:
-                    pass
-                ctx = None
-        if ctx is None:
-            raise RuntimeError("No H.264 encoder (tried h264_qsv, libx264).")
-        self.encoder = ctx
-        print(f"[video] {self.profile_name} {p['w']}x{p['h']}@{p['fps']} {p['bps']//1_000_000}Mbps via {name}", flush=True)
+        print(f"[video] {self.profile_name} {p['w']}x{p['h']}@{p['fps']} (aiortc H.264)", flush=True)
 
     def set_profile(self, name):
         if name in PROFILES and name != self.profile_name:
             self.profile_name = name
-            self._new_encoder()
+            p = PROFILES[name]
+            print(f"[video] {name} {p['w']}x{p['h']}@{p['fps']}", flush=True)
 
-    def _grab_encode(self):
+    def _grab_frame(self):
         p = PROFILES[self.profile_name]
         raw = self.sct.grab(self.mon)
         arr = np.frombuffer(raw.bgra, dtype=np.uint8).reshape(raw.height, raw.width, 4)
-        # nearest-neighbor downscale (no cv2 dependency)
+        # nearest-neighbor downscale (no cv2 dependency); BGRA -> RGB
         sy = max(1, raw.height // p["h"])
         sx = max(1, raw.width // p["w"])
-        small = arr[::sy, ::sx][:, :, 2::-1][:, :, ::-1]  # BGRA -> RGB
+        small = arr[::sy, ::sx][:, :, 2::-1]
         small = small[: p["h"], : p["w"]]
-        frame = av.VideoFrame.from_ndarray(small, format="rgb24")
-        frame = frame.reformat(p["w"], p["h"], "yuv420p")
-        packets = list(self.encoder.encode(frame))
-        if not packets:
-            return None
-        decoded = self.encoder.decode(packets[0])
-        return decoded[0] if decoded else None
+        frame = av.VideoFrame.from_ndarray(np.ascontiguousarray(small), format="rgb24")
+        return frame.reformat(p["w"], p["h"], "yuv420p")
 
     async def recv(self):
-        pts, time_base = await self.next_timestamp()
-        loop = asyncio.get_event_loop()
-        frame = await loop.run_in_executor(None, self._grab_encode)
-        if frame is None:
-            await asyncio.sleep(0.005)
-            return await self.recv()
-        frame.pts = pts
-        frame.time_base = time_base
-        # pace to target fps
+        # aiortc>=1.14 removed MediaStreamTrack.next_timestamp(): pace + stamp here.
         p = PROFILES[self.profile_name]
+        loop = asyncio.get_event_loop()
+        frame = await loop.run_in_executor(None, self._grab_frame)
+        frame.pts = self._pts
+        frame.time_base = fractions.Fraction(1, VIDEO_CLOCK_RATE)
+        self._pts += VIDEO_CLOCK_RATE // p["fps"]
         now = time.monotonic()
         wait = max(0.0, 1.0 / p["fps"] - (now - self._last))
         self._last = now + wait
@@ -241,6 +203,20 @@ def candidate_from_json(o):
         protocol=o.get("protocol", "udp"), priority=o.get("priority", 0),
         ip=o.get("ip", ""), port=o.get("port", 0), type=o.get("type", "host"),
     )
+
+def with_bandwidth(sdp, kbps):
+    """Pin the video section's target bitrate (aiortc honors b=AS)."""
+    out = []
+    in_video = False
+    for line in sdp.splitlines():
+        if line.startswith("m="):
+            in_video = line.startswith("m=video")
+        if in_video and line.startswith("b=AS:"):
+            continue
+        out.append(line)
+        if in_video and line.startswith("c="):
+            out.append(f"b=AS:{kbps}")
+    return "\r\n".join(out) + "\r\n"
 
 async def serve_offer(code, offer_b64):
     import base64
@@ -303,6 +279,8 @@ async def serve_offer(code, offer_b64):
             except Exception:
                 pass
     answer = await pc.createAnswer()
+    kbps = max(500, PROFILES[track.profile_name]["bps"] // 1000)
+    answer.sdp = with_bandwidth(answer.sdp, kbps)
     await pc.setLocalDescription(answer)
     await post_signal(code, "answer",
                       __import__("base64").b64encode(pc.localDescription.sdp.encode()).decode())
