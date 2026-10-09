@@ -22,6 +22,7 @@ from mss import mss
 import av
 
 from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc import RTCConfiguration, RTCIceServer
 
 # ---------------------------------------------------------------- env
 
@@ -243,7 +244,8 @@ def candidate_from_json(o):
 
 async def serve_offer(code, offer_b64):
     import base64
-    pc = RTCPeerConnection(configuration={"iceServers": [{"urls": STUN}]})
+    pc = RTCPeerConnection(configuration=RTCConfiguration(
+        iceServers=[RTCIceServer(urls=u) for u in STUN]))
     track = ScreenTrack()
 
     @pc.on("datachannel")
