@@ -21,10 +21,32 @@ const toAgentName = (p: string) => ({ Auto: "auto", "720p": "720p", "720p60": "7
 const b64e = (s: string) => btoa(unescape(encodeURIComponent(s)));
 
 type Stats = { rtt: number; fps: number; jitter: number; bitrate: number; state: string };
+type Zoom = "fit" | "one";
+
+const glass: React.CSSProperties = {
+  background: "rgba(16,22,34,.62)",
+  backdropFilter: "blur(18px) saturate(1.5)",
+  WebkitBackdropFilter: "blur(18px) saturate(1.5)",
+  border: "1px solid rgba(255,255,255,.09)",
+  boxShadow: "0 12px 40px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.08)",
+};
+
+const dockBtn: React.CSSProperties = {
+  background: "transparent",
+  border: "1px solid transparent",
+  color: "inherit",
+  padding: "8px 12px",
+  borderRadius: 10,
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+};
 
 export default function Desktop() {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
   const codeRef = useRef("");
@@ -34,6 +56,7 @@ export default function Desktop() {
   const [status, setStatus] = useState("idle");
   const [err, setErr] = useState("");
   const [quality, setQuality] = useState<(typeof PROFILES)[number]>("Auto");
+  const [liveProfile, setLiveProfile] = useState("720p");
   const [stats, setStats] = useState<Stats>({ rtt: 0, fps: 0, jitter: 0, bitrate: 0, state: "-" });
   const [showStats, setShowStats] = useState(true);
   const [control, setControl] = useState(true);
@@ -43,15 +66,24 @@ export default function Desktop() {
   const [pinReq, setPinReq] = useState<{ salt: string; iters: number; nonce: string } | null>(null);
   const [pinErr, setPinErr] = useState("");
   const [verified, setVerified] = useState(false);
+  const [zoom, setZoom] = useState<Zoom>("fit");
+  const [isFs, setIsFs] = useState(false);
+  const [vAspect, setVAspect] = useState("16 / 9");
   const verifiedRef = useRef(false);
   const qualityRef = useRef(quality);
   qualityRef.current = quality;
+
+  const live = status === "live";
+  const active = live || status.startsWith("verifying") || status === "pin required";
 
   useEffect(() => {
     fetch("/api/auth/me").then((r) => {
       if (!r.ok) router.replace("/login");
     });
+    const onFs = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFs);
     return () => {
+      document.removeEventListener("fullscreenchange", onFs);
       stop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -72,7 +104,15 @@ export default function Desktop() {
 
   function setProfile(p: string) {
     autoRef.current.profile = p;
+    setLiveProfile(p);
     sendInput({ t: "profile", name: toAgentName(p) });
+  }
+
+  function toggleFullscreen() {
+    const el = stageRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else el.requestFullscreen().catch(() => setErr("Fullscreen blocked by the browser."));
   }
 
   async function start() {
@@ -138,7 +178,7 @@ export default function Desktop() {
           setStatus("failed");
         }
         if (pc.connectionState === "disconnected") setStatus("reconnecting…");
-        if (pc.connectionState === "connected") setStatus("live");
+        if (pc.connectionState === "connected" && verifiedRef.current) setStatus("live");
       };
 
       const offer = await pc.createOffer();
@@ -255,6 +295,7 @@ export default function Desktop() {
         await fetch(`/api/desktop/signal?code=${codeRef.current}`, { method: "DELETE" });
       }
     } catch {}
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     dcRef.current?.close();
     pcRef.current?.close();
     pcRef.current = null;
@@ -276,109 +317,173 @@ export default function Desktop() {
   }
 
   return (
-    <main className="wrap" style={{ maxWidth: 1100 }}>
-      <div className="topbar">
-        <div className="row">
-          <span className={`dot ${status === "live" ? "ok" : "bad"}`} />
-          <strong>Live Desktop</strong>
-          <span className="muted">{status}{status === "live" ? ` · ${autoRef.current.profile}` : ""}</span>
+    <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column", padding: isFs ? 0 : "20px" }}>
+      {/* window bar */}
+      {!isFs && (
+        <div className="wrap" style={{ width: "100%", maxWidth: 1200, paddingBottom: 12 }}>
+          <div className="card" style={{ ...glass, borderRadius: 16, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <div className="row">
+              <span style={{ display: "flex", gap: 6 }}>
+                <i className={`dot ${live ? "ok" : "bad"}`} style={{ margin: 0, animation: live ? "pulse 1.6s infinite" : "none" }} />
+              </span>
+              <strong style={{ fontSize: 16, letterSpacing: ".2px" }}>Live Desktop</strong>
+              <span className="muted" style={{ fontSize: 13 }}>
+                {live ? `${liveProfile} · ${stats.rtt}ms · ${stats.fps}fps` : status}
+              </span>
+            </div>
+            <div className="row">
+              <select value={quality} onChange={(e) => {
+                const q = e.target.value as typeof quality;
+                setQuality(q);
+                if (live && q !== "Auto") setProfile(q);
+                if (q === "Auto") { autoRef.current.goodStreak = 0; }
+              }} style={{ background: "rgba(255,255,255,.06)" }}>
+                {PROFILES.map((p) => <option key={p} value={p}>{p === "Auto" ? "✨ Auto" : p}</option>)}
+              </select>
+              <button className="ghost" onClick={() => router.push("/files")}>Files</button>
+              {active ? (
+                <span className="row">
+                  <button className="danger" onClick={stop}>Disconnect</button>
+                  <button className="ghost" onClick={async () => { await stop(); await start(); }}>Reconnect</button>
+                </span>
+              ) : <button onClick={start}>Connect</button>}
+            </div>
+          </div>
         </div>
-        <div className="row">
-          <select value={quality} onChange={(e) => {
-            const q = e.target.value as typeof quality;
-            setQuality(q);
-            if (status === "live" && q !== "Auto") setProfile(q);
-            if (q === "Auto") { autoRef.current.goodStreak = 0; }
-          }}>
-            {PROFILES.map((p) => <option key={p} value={p}>{p === "Auto" ? "Auto (recommended)" : p}</option>)}
-          </select>
-          <button className="ghost" onClick={() => setShowStats(!showStats)}>Stats</button>
-          <button className="ghost" onClick={() => setControl(!control)}>{control ? "Control: on" : "Control: off"}</button>
-          <button className="ghost" onClick={() => sendInput({ t: "clip-get" })} title="Fetch remote clipboard (explicit)">Copy ⬅ remote</button>
-          <button className="ghost" onClick={async () => {
-            try {
-              const text = await navigator.clipboard.readText();
-              if (text) sendInput({ t: "clip-set", text: text.slice(0, 5000) });
-            } catch {
-              const text = prompt("Text to type on the remote PC:");
-              if (text) sendInput({ t: "clip-set", text: text.slice(0, 5000) });
-            }
-          }} title="Type local text at the remote cursor (explicit)">Paste remote ➡</button>
-          {status === "live" || status.startsWith("verifying") || status === "pin required" ? (
-            <span className="row">
-              <button className="danger" onClick={stop}>Disconnect</button>
-              <button className="ghost" onClick={async () => { await stop(); await start(); }} title="Fresh ICE + new session">Reconnect</button>
-            </span>
-          ) : <button onClick={start}>Connect</button>}
-          <button className="ghost" onClick={() => router.push("/files")}>Files</button>
+      )}
+
+      {err && <div className="wrap" style={{ maxWidth: 1200, width: "100%" }}><p className="err">{err}</p></div>}
+
+      {clip != null && !isFs && (
+        <div className="wrap" style={{ maxWidth: 1200, width: "100%" }}>
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <strong>Remote clipboard</strong>
+              <button className="ghost" onClick={() => setClip(null)}>Clear</button>
+            </div>
+            <pre style={{ whiteSpace: "pre-wrap", fontSize: 13, maxHeight: 140, overflow: "auto" }}>{clip || "(empty)"}</pre>
+          </div>
+        </div>
+      )}
+
+      {/* stage */}
+      <div className="wrap" style={{ width: "100%", maxWidth: 1200, flex: 1, display: "flex", paddingBottom: isFs ? 0 : 20 }}>
+        <div ref={stageRef} style={{
+          ...glass, position: "relative", flex: 1, borderRadius: isFs ? 0 : 20, overflow: "hidden",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "#000", minHeight: isFs ? "100vh" : 420,
+        }}>
+          {active ? (
+            <div style={{ width: "100%", height: isFs ? "100vh" : "72vh", overflow: zoom === "one" ? "auto" : "hidden", display: "flex", alignItems: zoom === "one" ? "flex-start" : "center", justifyContent: zoom === "one" ? "flex-start" : "center" }}>
+              <video
+                ref={videoRef}
+                style={{
+                  width: zoom === "one" ? "auto" : "100%",
+                  height: zoom === "one" ? "auto" : "100%",
+                  maxWidth: zoom === "one" ? "none" : "100%",
+                  objectFit: "contain",
+                  aspectRatio: zoom === "one" ? undefined : vAspect,
+                  background: "#000",
+                  cursor: control && live ? "none" : "default",
+                }}
+                playsInline
+                muted
+                onLoadedMetadata={(e) => {
+                  const v = e.currentTarget;
+                  if (v.videoWidth) setVAspect(`${v.videoWidth} / ${v.videoHeight}`);
+                }}
+                onMouseMove={(e) => control && live && sendInput({ t: "move", ...rel(e) })}
+                onMouseDown={(e) => control && live && sendInput({ t: "down", b: e.button, ...rel(e) })}
+                onMouseUp={(e) => control && live && sendInput({ t: "up", b: e.button, ...rel(e) })}
+                onWheel={(e) => control && live && sendInput({ t: "wheel", d: Math.sign(e.deltaY) * -3 })}
+                onContextMenu={(e) => e.preventDefault()}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (!control || !live) return;
+                  e.preventDefault();
+                  sendInput({ t: "key", k: e.key, down: true });
+                }}
+                onKeyUp={(e) => control && live && sendInput({ t: "key", k: e.key, down: false })}
+              />
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: 48 }}>
+              <div style={{ fontSize: 44, marginBottom: 12 }}>🖥️</div>
+              <h2 style={{ margin: "0 0 8px" }}>Your PC, right here</h2>
+              <p className="muted" style={{ margin: "0 0 20px" }}>Home PC must run: <code>npm run dev</code> + <code>npm run agent</code> + <code>npm run desktop</code></p>
+              <button onClick={start} style={{ fontSize: 16, padding: "12px 32px" }}>Connect</button>
+            </div>
+          )}
+
+          {showStats && active && (
+            <div style={{ position: "absolute", top: 14, left: 14, ...glass, borderRadius: 12, padding: "8px 14px", fontSize: 12.5, fontFamily: "monospace", zIndex: 5 }}>
+              {stats.rtt}ms · {stats.fps}fps · {stats.bitrate}Mbps · {stats.state}
+            </div>
+          )}
+
+          {zoom === "one" && active && (
+            <div style={{ position: "absolute", top: 14, right: 14, ...glass, borderRadius: 12, padding: "8px 14px", fontSize: 12.5, zIndex: 5 }}>
+              1:1 — drag to pan
+            </div>
+          )}
+
+          {/* glass dock */}
+          {active && (
+            <div style={{
+              position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)",
+              ...glass, borderRadius: 18, padding: "8px 10px", display: "flex", gap: 4, alignItems: "center",
+              zIndex: 6, maxWidth: "96%", overflowX: "auto",
+            }}>
+              <button style={dockBtn} onClick={() => setZoom(zoom === "fit" ? "one" : "fit")} title="Toggle fit / 1:1 pixels">
+                {zoom === "fit" ? "🔍 Fit" : "🔍 1:1"}
+              </button>
+              <button style={dockBtn} onClick={toggleFullscreen} title="Fullscreen (Esc exits)">
+                {isFs ? "🗗 Exit" : "⛶ Full"}
+              </button>
+              <span style={{ width: 1, height: 22, background: "rgba(255,255,255,.12)" }} />
+              <button style={{ ...dockBtn, opacity: control ? 1 : 0.55 }} onClick={() => setControl(!control)} title="Remote keyboard + mouse">
+                {control ? "🖱️ On" : "🖱️ Off"}
+              </button>
+              <button style={dockBtn} onClick={() => sendInput({ t: "clip-get" })} title="Fetch remote clipboard">📋 ⬅</button>
+              <button style={dockBtn} onClick={async () => {
+                try {
+                  const text = await navigator.clipboard.readText();
+                  if (text) sendInput({ t: "clip-set", text: text.slice(0, 5000) });
+                } catch {
+                  const text = prompt("Text to type on the remote PC:");
+                  if (text) sendInput({ t: "clip-set", text: text.slice(0, 5000) });
+                }
+              }} title="Type at the remote cursor">📋 ➡</button>
+              <span style={{ width: 1, height: 22, background: "rgba(255,255,255,.12)" }} />
+              <button style={dockBtn} onClick={() => setShowStats(!showStats)} title="Stats overlay">📊</button>
+              <button style={{ ...dockBtn, color: "#ff8080" }} onClick={stop} title="End session">⏻</button>
+            </div>
+          )}
         </div>
       </div>
 
+      {/* PIN modal */}
       {pinReq && !verified && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}
-          onClick={() => {}}>
-          <form onSubmit={submitPin} className="card" style={{ width: 340 }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>Host PIN</h3>
-            <p className="muted" style={{ fontSize: 13 }}>This PC is locked. Enter the PIN you set on the host. It never leaves this browser in plaintext.</p>
-            <input type="password" placeholder="••••••" value={pin} onChange={(e) => setPin(e.target.value)} autoFocus style={{ width: "100%", marginBottom: 10 }} />
-            <label className="row muted" style={{ fontSize: 13, marginBottom: 10 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(4,8,16,.72)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
+          <form onSubmit={submitPin} className="card" style={{ ...glass, width: 350, borderRadius: 20, padding: 28 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 36, textAlign: "center" }}>🔐</div>
+            <h3 style={{ margin: "8px 0 4px", textAlign: "center" }}>Host PIN</h3>
+            <p className="muted" style={{ fontSize: 13, textAlign: "center" }}>This PC is locked. It never leaves this browser in plaintext.</p>
+            <input type="password" placeholder="••••••" value={pin} onChange={(e) => setPin(e.target.value)} autoFocus style={{ width: "100%", marginBottom: 10, textAlign: "center", fontSize: 20, letterSpacing: 6 }} />
+            <label className="row muted" style={{ fontSize: 13, marginBottom: 12, justifyContent: "center" }}>
               <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ width: 16 }} />
               Remember this device
             </label>
             <button style={{ width: "100%" }}>Unlock</button>
-            {pinErr && <p className="err">{pinErr}</p>}
-            <p className="row" style={{ marginTop: 10 }}>
+            {pinErr && <p className="err" style={{ textAlign: "center" }}>{pinErr}</p>}
+            <p className="row" style={{ marginTop: 10, justifyContent: "center" }}>
               <button type="button" className="ghost" onClick={stop}>Cancel</button>
             </p>
           </form>
         </div>
       )}
 
-      {err && <p className="err">{err}</p>}
-
-      {clip != null && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <strong>Remote clipboard</strong>
-            <button className="ghost" onClick={() => setClip(null)}>Clear</button>
-          </div>
-          <pre style={{ whiteSpace: "pre-wrap", fontSize: 13, maxHeight: 160, overflow: "auto" }}>{clip || "(empty)"}</pre>
-        </div>
-      )}
-
-      <div className="card" style={{ padding: 8, position: "relative" }}>
-        <video
-          ref={videoRef}
-          style={{ width: "100%", borderRadius: 8, background: "#000", aspectRatio: "16/9" }}
-          playsInline
-          muted
-          onMouseMove={(e) => control && sendInput({ t: "move", ...rel(e) })}
-          onMouseDown={(e) => control && sendInput({ t: "down", b: e.button, ...rel(e) })}
-          onMouseUp={(e) => control && sendInput({ t: "up", b: e.button, ...rel(e) })}
-          onWheel={(e) => control && sendInput({ t: "wheel", d: Math.sign(e.deltaY) * -3 })}
-          onContextMenu={(e) => e.preventDefault()}
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (!control) return;
-            e.preventDefault();
-            sendInput({ t: "key", k: e.key, down: true });
-          }}
-          onKeyUp={(e) => control && sendInput({ t: "key", k: e.key, down: false })}
-        />
-        {showStats && (
-          <div style={{ position: "absolute", top: 16, left: 16, background: "rgba(0,0,0,.72)", padding: "8px 12px", borderRadius: 8, fontSize: 13, fontFamily: "monospace" }}>
-            RTT {stats.rtt}ms · {stats.fps}fps · {stats.bitrate}Mbps · jitter {stats.jitter}ms · {stats.state}
-          </div>
-        )}
-        {status !== "live" && (
-          <div className="muted" style={{ padding: 24, textAlign: "center" }}>
-            {status === "idle" ? "Press Connect. Home PC must run: npm run dev + npm run agent + npm run desktop" : status}
-          </div>
-        )}
-      </div>
-      <p className="muted" style={{ fontSize: 13 }}>
-        Click the video first so keystrokes go to the remote PC. Kill-switch in Files revokes everything instantly.
-      </p>
+      <style>{`@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }`}</style>
     </main>
   );
 }
