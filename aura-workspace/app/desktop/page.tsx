@@ -26,6 +26,7 @@ export default function Desktop() {
   const [stats, setStats] = useState<Stats>({ rtt: 0, fps: 0, jitter: 0, bitrate: 0, state: "-" });
   const [showStats, setShowStats] = useState(true);
   const [control, setControl] = useState(true);
+  const [clip, setClip] = useState<string | null>(null);
   const qualityRef = useRef(quality);
   qualityRef.current = quality;
 
@@ -73,6 +74,15 @@ export default function Desktop() {
       dc.onopen = () => {
         setStatus("live");
         setProfile(qualityRef.current === "Auto" ? "720p" : qualityRef.current);
+      };
+      dc.onmessage = (e) => {
+        try {
+          const m = JSON.parse(e.data);
+          if (m.t === "clip") {
+            setClip(String(m.text || "").slice(0, 100000));
+            navigator.clipboard?.writeText(String(m.text || "")).catch(() => {});
+          }
+        } catch {}
       };
 
       pc.ontrack = (e) => {
@@ -218,6 +228,16 @@ export default function Desktop() {
           </select>
           <button className="ghost" onClick={() => setShowStats(!showStats)}>Stats</button>
           <button className="ghost" onClick={() => setControl(!control)}>{control ? "Control: on" : "Control: off"}</button>
+          <button className="ghost" onClick={() => sendInput({ t: "clip-get" })} title="Fetch remote clipboard (explicit)">Copy ⬅ remote</button>
+          <button className="ghost" onClick={async () => {
+            try {
+              const text = await navigator.clipboard.readText();
+              if (text) sendInput({ t: "clip-set", text: text.slice(0, 5000) });
+            } catch {
+              const text = prompt("Text to type on the remote PC:");
+              if (text) sendInput({ t: "clip-set", text: text.slice(0, 5000) });
+            }
+          }} title="Type local text at the remote cursor (explicit)">Paste remote ➡</button>
           {status === "live" ? <button className="danger" onClick={stop}>Disconnect</button>
             : <button onClick={start}>Connect</button>}
           <button className="ghost" onClick={() => router.push("/files")}>Files</button>
@@ -225,6 +245,16 @@ export default function Desktop() {
       </div>
 
       {err && <p className="err">{err}</p>}
+
+      {clip != null && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <strong>Remote clipboard</strong>
+            <button className="ghost" onClick={() => setClip(null)}>Clear</button>
+          </div>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 13, maxHeight: 160, overflow: "auto" }}>{clip || "(empty)"}</pre>
+        </div>
+      )}
 
       <div className="card" style={{ padding: 8, position: "relative" }}>
         <video

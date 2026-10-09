@@ -32,7 +32,20 @@ export async function GET(req: NextRequest) {
     const { abs, size } = await getAgent().readFile(rel);
     const name = path.basename(abs);
     const ext = path.extname(name).toLowerCase();
-    const stream = fs.createReadStream(abs);
+    // Resumable downloads: honor Range so broken school Wi-Fi can resume.
+    let start = 0;
+    let end = size - 1;
+    let partial = false;
+    const range = req.headers.get("range");
+    if (range) {
+      const m = range.match(/bytes=(\d*)-(\d*)/);
+      if (m) {
+        if (m[1]) start = Math.min(Number(m[1]), size - 1);
+        if (m[2]) end = Math.min(Number(m[2]), size - 1);
+        if (end >= start) partial = true;
+      }
+    }
+    const stream = fs.createReadStream(abs, partial ? { start, end } : {});
     const webStream = new ReadableStream({
       start(controller) {
         stream.on("data", (c) => controller.enqueue(c));
@@ -47,14 +60,16 @@ export async function GET(req: NextRequest) {
       ? access.user
       : await getUserBySession(req.cookies.get(SESSION_COOKIE)?.value);
     store.audit("file.download", `${rel} (${size}b)`, user?.id ?? null, clientIp(req));
-    return new NextResponse(webStream as any, {
-      headers: {
-        "Content-Type": MIME[ext] || "application/octet-stream",
-        "Content-Length": String(size),
-        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
+    const chunkLen = end - start + 1;
+    const headers: Record<string, string> = {
+      "Content-Type": MIME[ext] || "application/octet-stream",
+      "Content-Length": String(chunkLen),
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+      "X-Content-Type-Options": "nosniff",
+      "Accept-Ranges": "bytes",
+    };
+    if (partial) headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
+    return new NextResponse(webStream as any, { status: partial ? 206 : 200, headers });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Download failed." }, { status: 404 });
   }

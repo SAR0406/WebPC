@@ -12,13 +12,48 @@ export async function POST(req: NextRequest) {
   if (!access) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
   const url = new URL(req.url);
   const dir = url.searchParams.get("path") || "/";
+  const maxMB = Number(process.env.AURA_MAX_UPLOAD_MB || 100);
+
+  // Resumable path: raw chunked PUT-style posts (?name=&chunk=&chunks=&id=).
+  // Single-shot path: multipart form with field 'file'.
+  const chunkName = url.searchParams.get("name");
+  if (chunkName) {
+    const chunk = Number(url.searchParams.get("chunk") || 0);
+    const chunks = Number(url.searchParams.get("chunks") || 1);
+    const upId = (url.searchParams.get("id") || "u").replace(/[^\w-]{0,40}/, "").slice(0, 40) || "u";
+    const safeName = path.basename(chunkName).replace(/[^\w.\-() +]/g, "_").slice(0, 180) || "upload.bin";
+    if (!Number.isInteger(chunk) || !Number.isInteger(chunks) || chunk < 0 || chunk >= chunks || chunks > 2000) {
+      return NextResponse.json({ error: "Bad chunk range." }, { status: 400 });
+    }
+    try {
+      const dirAbs = await resolveSafePath(dir);
+      const partAbs = path.join(dirAbs, `.aura-part-${upId}`);
+      await resolveSafePath(`${dir === "/" ? "" : dir}/${safeName}`);
+      const buf = Buffer.from(await req.arrayBuffer());
+      if (partAbs.length + buf.length > 0 && (await fsp.stat(partAbs).catch(() => ({ size: 0 }))).size + buf.length > maxMB * 1024 * 1024) {
+        return NextResponse.json({ error: `File exceeds ${maxMB}MB cap.` }, { status: 413 });
+      }
+      await fsp.appendFile(partAbs, buf);
+      if (chunk === chunks - 1) {
+        await fsp.rename(partAbs, path.join(dirAbs, safeName));
+        const user = "user" in access
+          ? access.user
+          : await getUserBySession(req.cookies.get(SESSION_COOKIE)?.value);
+        store.audit("file.upload", `${dir}/${safeName} (resumed)`, user?.id ?? null, clientIp(req));
+        return NextResponse.json({ ok: true, name: safeName, done: true });
+      }
+      return NextResponse.json({ ok: true, done: false, chunk });
+    } catch (e: any) {
+      return NextResponse.json({ error: e?.message || "Upload failed." }, { status: 400 });
+    }
+  }
+
   const form = await req.formData().catch(() => null);
   if (!form) return NextResponse.json({ error: "Use multipart form with field 'file'." }, { status: 400 });
   const file = form.get("file") as File | null;
   if (!file || typeof file === "string") {
     return NextResponse.json({ error: "Missing file field." }, { status: 400 });
   }
-  const maxMB = Number(process.env.AURA_MAX_UPLOAD_MB || 100);
   if (file.size > maxMB * 1024 * 1024) {
     return NextResponse.json({ error: `File exceeds ${maxMB}MB cap.` }, { status: 413 });
   }

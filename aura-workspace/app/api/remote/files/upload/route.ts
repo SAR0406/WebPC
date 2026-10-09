@@ -12,7 +12,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Home PC is offline. Start the gateway + agent at home." }, { status: 502 });
   }
   const url = new URL(req.url);
-  const qs = new URLSearchParams({ path: url.searchParams.get("path") || "/" });
+  // forward the full query string (path + resumable chunk params)
+  const qs = url.searchParams.toString();
   try {
     const body = await req.arrayBuffer();
     const r = await fetch(`${agent.url.replace(/\/$/, "")}/api/files/upload?${qs}`, {

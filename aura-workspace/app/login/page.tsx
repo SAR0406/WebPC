@@ -9,6 +9,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [school, setSchool] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/init")
@@ -29,7 +30,7 @@ export default function Login() {
       const r = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, expiresInMinutes: school ? 30 : 720 }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "Failed.");
@@ -66,6 +67,10 @@ export default function Login() {
             autoComplete={initialized === false ? "new-password" : "current-password"}
             required
           />
+          <label className="row muted" style={{ fontSize: 14 }}>
+            <input type="checkbox" checked={school} onChange={(e) => setSchool(e.target.checked)} style={{ width: 18 }} />
+            School computer — 30-minute session
+          </label>
           <button disabled={busy || initialized === null}>
             {busy ? "Working…" : initialized === false ? "Create admin" : "Log in"}
           </button>

@@ -251,6 +251,7 @@ async def serve_offer(code, offer_b64):
     @pc.on("datachannel")
     def on_dc(ch):
         print(f"[input] channel '{ch.label}' open", flush=True)
+        track.channel = ch
 
         @ch.on("message")
         def on_msg(msg):
@@ -260,6 +261,23 @@ async def serve_offer(code, offer_b64):
                 return
             if m.get("t") == "profile":
                 track.set_profile(m.get("name", "auto"))
+            elif m.get("t") == "clip-get":
+                # Remote -> viewer. User-initiated on both ends (explicit button).
+                try:
+                    import pyperclip
+                    text = str(pyperclip.paste() or "")[:100_000]
+                    try:
+                        ch.send(json.dumps({"t": "clip", "text": text}))
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            elif m.get("t") == "clip-set":
+                # Viewer -> remote. Typed at the cursor; never overwrites remote clipboard.
+                try:
+                    track.input.pg.typewrite(str(m.get("text", ""))[:5_000], interval=0.0)
+                except Exception:
+                    pass
             else:
                 track.input.handle(m)
 

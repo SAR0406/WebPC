@@ -17,6 +17,8 @@ export async function POST(req: NextRequest) {
   }
   const username = String(body.username || "").trim().toLowerCase();
   const password = String(body.password || "");
+  // School mode: short sessions (30 min) vs standard (12 h). Server clamps.
+  const minutes = Math.min(720, Math.max(15, Number(body.expiresInMinutes || 720)));
   let user;
   try {
     user = await store.findUserByUsername(username);
@@ -54,7 +56,7 @@ export async function POST(req: NextRequest) {
       device_label: label,
       ip,
       ua: ua.slice(0, 300),
-      expires_at: sessionExpiry().toISOString(),
+      expires_at: new Date(Date.now() + minutes * 60 * 1000).toISOString(),
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Login failed." }, { status: 500 });

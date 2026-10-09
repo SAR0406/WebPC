@@ -203,6 +203,30 @@ export const store = {
     }).catch(() => null);
   },
 
+  async listPins(userId: number): Promise<any[]> {
+    return sb(`/aura_pins?user_id=eq.${userId}&select=id,label,path,created_at&order=id.asc&limit=50`);
+  },
+
+  async addPin(userId: number, label: string, p: string): Promise<void> {
+    await sb("/aura_pins", {
+      method: "POST",
+      prefer: "resolution=merge-duplicates,return=minimal",
+      body: { user_id: userId, label: label.slice(0, 80), path: p.slice(0, 500) },
+    });
+  },
+
+  async deletePin(userId: number, id: number): Promise<void> {
+    await sb(`/aura_pins?user_id=eq.${userId}&id=eq.${id}`, { method: "DELETE" }).catch(() => null);
+  },
+
+  async shortenSession(sessionId: string, userId: number, minutes: number): Promise<void> {
+    const exp = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+    await sb(`/aura_sessions?id=eq.${encodeURIComponent(sessionId)}&user_id=eq.${userId}`, {
+      method: "PATCH",
+      body: { expires_at: exp },
+    });
+  },
+
   audit(action: string, detail = "", userId: number | null = null, ip = ""): void {
     // Fire-and-forget: audit must never break requests.
     sb("/aura_audit", {
