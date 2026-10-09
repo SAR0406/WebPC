@@ -187,6 +187,22 @@ export const store = {
     await sb(`/aura_agents?user_id=eq.${userId}`, { method: "DELETE" }).catch(() => null);
   },
 
+  async postSignal(s: { code: string; user_id: number; kind: string; payload: string }): Promise<void> {
+    await sb("/aura_signals", { method: "POST", body: s });
+  },
+
+  async getSignals(code: string, userId: number, afterId = 0): Promise<any[]> {
+    return sb(
+      `/aura_signals?code=eq.${encodeURIComponent(code)}&user_id=eq.${userId}&id=gt.${afterId}&select=id,kind,payload,created_at&order=id.asc&limit=100`
+    );
+  },
+
+  async deleteSignals(code: string, userId: number): Promise<void> {
+    await sb(`/aura_signals?code=eq.${encodeURIComponent(code)}&user_id=eq.${userId}`, {
+      method: "DELETE",
+    }).catch(() => null);
+  },
+
   audit(action: string, detail = "", userId: number | null = null, ip = ""): void {
     // Fire-and-forget: audit must never break requests.
     sb("/aura_audit", {

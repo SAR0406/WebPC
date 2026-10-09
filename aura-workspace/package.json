@@ -10,7 +10,8 @@
     "init:admin": "node scripts/init-admin.mjs",
     "admin:create": "node scripts/create-admin.mjs",
     "agent": "node agent/run.mjs",
-    "agent:setup": "node scripts/agent-setup.mjs"
+    "agent:setup": "node scripts/agent-setup.mjs",
+    "desktop": "node scripts/desktop.mjs"
   },
   "dependencies": {
     "next": "^15.5.4",
