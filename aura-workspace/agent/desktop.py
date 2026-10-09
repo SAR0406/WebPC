@@ -72,6 +72,19 @@ STUN = [
     "stun:stun1.l.google.com:19302",
 ]
 
+def ice_servers():
+    """STUN by default ($0). Set AURA_ICE to JSON to add TURN, e.g.
+    [{"urls":"turn:host:3478","username":"u","credential":"p"}]"""
+    raw = os.environ.get("AURA_ICE", "").strip()
+    if raw:
+        try:
+            arr = json.loads(raw)
+            if isinstance(arr, list) and arr:
+                return arr
+        except Exception as e:
+            print(f"[net] bad AURA_ICE, using STUN: {e}", flush=True)
+    return [{"urls": STUN}]
+
 # Encoder preference, probed once (QSV missing from most Windows wheels).
 _CODEC_ORDER = ["h264_qsv", "libx264"]
 
@@ -139,8 +152,19 @@ class ScreenTrack(MediaStreamTrack):
         self.profile_name = "auto"
         self._pts = 0
         self._last = 0.0
+        self.locked = True  # host-PIN gate: black frames + no input until verified
+        self._black = {}
         p = PROFILES[self.profile_name]
         print(f"[video] {self.profile_name} {p['w']}x{p['h']}@{p['fps']} (aiortc H.264)", flush=True)
+
+    def black_frame(self, p):
+        key = (p["w"], p["h"])
+        f = self._black.get(key)
+        if f is None:
+            f = av.VideoFrame.from_ndarray(np.zeros((p["h"], p["w"], 3), dtype=np.uint8), format="rgb24")
+            f = f.reformat(p["w"], p["h"], "yuv420p")
+            self._black[key] = f
+        return f
 
     def set_profile(self, name):
         if name in PROFILES and name != self.profile_name:
@@ -164,7 +188,10 @@ class ScreenTrack(MediaStreamTrack):
         # aiortc>=1.14 removed MediaStreamTrack.next_timestamp(): pace + stamp here.
         p = PROFILES[self.profile_name]
         loop = asyncio.get_event_loop()
-        frame = await loop.run_in_executor(None, self._grab_frame)
+        if self.locked:
+            frame = self.black_frame(p)
+        else:
+            frame = await loop.run_in_executor(None, self._grab_frame)
         frame.pts = self._pts
         frame.time_base = fractions.Fraction(1, VIDEO_CLOCK_RATE)
         self._pts += VIDEO_CLOCK_RATE // p["fps"]
@@ -195,8 +222,27 @@ async def cleanup(code):
     except Exception:
         pass
 
-def candidate_from_json(o):
-    # aiortc needs foundation/component/protocol/priority/ip/port/type (+ sdpMid/Mid)
+async def close_later(pc, code):
+    try:
+        await pc.close()
+    except Exception:
+        pass
+    await cleanup(code)
+
+
+def lock_workstation():
+    """CRD-style curtain: lock the host when the session ends (opt-in)."""
+    if os.environ.get("AURA_LOCK_ON_DISCONNECT") != "1":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.LockWorkStation()
+        print("[session] workstation locked", flush=True)
+    except Exception as e:
+        print(f"[session] lock failed: {e}", flush=True)
+
+
+def candidate_from_json(o):    # aiortc needs foundation/component/protocol/priority/ip/port/type (+ sdpMid/Mid)
     return RTCIceCandidate(
         sdpMid=o.get("sdpMid"), sdpMLineIndex=o.get("sdpMLineIndex"),
         foundation=o.get("foundation", ""), component=o.get("component", 1),
@@ -220,14 +266,59 @@ def with_bandwidth(sdp, kbps):
 
 async def serve_offer(code, offer_b64):
     import base64
-    pc = RTCPeerConnection(configuration=RTCConfiguration(
-        iceServers=[RTCIceServer(urls=u) for u in STUN]))
+    import hashlib
+    import hmac as hmac_mod
+    import secrets as secrets_mod
+    ice = []
+    for srv in ice_servers():
+        if isinstance(srv, dict):
+            kw = {"urls": srv.get("urls")}
+            if srv.get("username"):
+                kw["username"] = srv["username"]
+            if srv.get("credential"):
+                kw["credential"] = srv["credential"]
+            ice.append(RTCIceServer(**kw))
+        else:
+            ice.append(RTCIceServer(urls=srv))
+    pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice))
     track = ScreenTrack()
+
+    # --- host-PIN gate (CRD-style unattended access) ---
+    # The PIN never leaves the viewer's device in plaintext: the viewer sends a
+    # PBKDF2-derived key inside the DTLS-SRTP-encrypted datachannel, and the
+    # agent compares its SHA-256 against the stored verifier. Signaling server
+    # sees only opaque SDP/ICE. 3 wrong tries -> session killed + cooldown.
+    pin_cfg = None
+    try:
+        rows = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: sb("GET", f"/aura_host_pin?user_id=eq.{USER_ID}&select=salt,verifier,iters&limit=1"))
+        pin_cfg = (rows or [None])[0]
+    except Exception:
+        pin_cfg = None
+    auth = {"verified": pin_cfg is None, "fails": 0, "nonce": secrets_mod.token_hex(16)}
+    if auth["verified"]:
+        track.locked = False
+        print("[auth] no host PIN configured — open mode (run agent:setup with AURA_HOST_PIN)", flush=True)
+
+    def verify_key(key_hex, nonce):
+        if not pin_cfg or nonce != auth["nonce"] or len(key_hex) != 64:
+            return False
+        try:
+            digest = hashlib.sha256(bytes.fromhex(key_hex)).hexdigest()
+        except Exception:
+            return False
+        return hmac_mod.compare_digest(digest, pin_cfg["verifier"])
 
     @pc.on("datachannel")
     def on_dc(ch):
         print(f"[input] channel '{ch.label}' open", flush=True)
         track.channel = ch
+        if pin_cfg and not auth["verified"]:
+            try:
+                ch.send(json.dumps({"t": "pin-req", "salt": pin_cfg["salt"],
+                                    "iters": pin_cfg["iters"], "nonce": auth["nonce"]}))
+            except Exception:
+                pass
 
         @ch.on("message")
         def on_msg(msg):
@@ -235,9 +326,59 @@ async def serve_offer(code, offer_b64):
                 m = json.loads(msg)
             except Exception:
                 return
-            if m.get("t") == "profile":
+            t = m.get("t")
+            if t == "pin-key" and not auth["verified"]:
+                if verify_key(m.get("key", ""), m.get("nonce", "")):
+                    auth["verified"] = True
+                    track.locked = False
+                    resp = {"t": "pin-ok"}
+                    if m.get("remember"):
+                        token = secrets_mod.token_hex(32)
+                        th = hashlib.sha256(token.encode()).hexdigest()
+                        try:
+                            sb("POST", "/aura_pairings",
+                               {"user_id": int(USER_ID), "token_hash": th, "label": "desktop"})
+                            resp["token"] = token
+                        except Exception:
+                            pass
+                    try:
+                        ch.send(json.dumps(resp))
+                    except Exception:
+                        pass
+                    print("[auth] viewer verified", flush=True)
+                else:
+                    auth["fails"] += 1
+                    left = 3 - auth["fails"]
+                    try:
+                        ch.send(json.dumps({"t": "pin-no", "left": max(0, left)}))
+                    except Exception:
+                        pass
+                    if left <= 0:
+                        asyncio.ensure_future(close_later(pc, code))
+                return
+            if t == "pair" and not auth["verified"]:
+                # returning device: token hash must be in the pairing registry
+                try:
+                    th = hashlib.sha256(str(m.get("token", "")).encode()).hexdigest()
+                    rows = sb("GET", f"/aura_pairings?user_id=eq.{USER_ID}"
+                                     f"&token_hash=eq.{th}&select=id&limit=1")
+                    if rows:
+                        auth["verified"] = True
+                        track.locked = False
+                        ch.send(json.dumps({"t": "pin-ok"}))
+                        print("[auth] paired device accepted", flush=True)
+                        return
+                except Exception:
+                    pass
+                auth["fails"] += 1
+                if auth["fails"] >= 3:
+                    asyncio.ensure_future(close_later(pc, code))
+                return
+            if not auth["verified"]:
+                return
+            if t == "profile":
                 track.set_profile(m.get("name", "auto"))
-            elif m.get("t") == "clip-get":
+            elif t == "clip-get":
                 # Remote -> viewer. User-initiated on both ends (explicit button).
                 try:
                     import pyperclip
@@ -248,7 +389,7 @@ async def serve_offer(code, offer_b64):
                         pass
                 except Exception:
                     pass
-            elif m.get("t") == "clip-set":
+            elif t == "clip-set":
                 # Viewer -> remote. Typed at the cursor; never overwrites remote clipboard.
                 try:
                     track.input.pg.typewrite(str(m.get("text", ""))[:5_000], interval=0.0)
@@ -305,6 +446,7 @@ async def serve_offer(code, offer_b64):
             elif r["kind"] == "bye":
                 closed.set()
     await pc.close()
+    lock_workstation()
     await cleanup(code)
     print("[session] closed", flush=True)
 

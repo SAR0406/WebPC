@@ -5,6 +5,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const scrypt = promisify(crypto.scrypt);
 
 const ROOT = process.cwd();
 const BASE = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
@@ -66,6 +69,28 @@ set("SUPABASE_ANON_KEY", ANON);
 set("AGENT_SECRET", secret);
 set("AURA_USER_ID", String(userId));
 fs.writeFileSync(envPath, content.trim() + "\n");
+
+// 4. Host PIN for unattended desktop access (optional but recommended).
+// Stored as PBKDF2 verifier only — the PIN itself never touches disk or server.
+const hostPin = process.env.AURA_HOST_PIN || "";
+if (hostPin) {
+  if (hostPin.length < 6) {
+    console.error("AURA_HOST_PIN too short (min 6 chars). Skipping PIN setup.");
+  } else {
+    const salt = crypto.randomBytes(16).toString("hex");
+    const iters = 600000;
+    const key = ((await scrypt(hostPin, salt, 32)) ).toString("hex");
+    const verifier = crypto.createHash("sha256").update(Buffer.from(key, "hex")).digest("hex");
+    const H = { apikey: ANON, Authorization: `Bearer ${ANON}`, "Content-Type": "application/json" };
+    const up = await fetch(`${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/aura_host_pin`, {
+      method: "POST",
+      headers: { ...H, Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ user_id: userId, salt, verifier, iters, updated_at: new Date().toISOString() }),
+    });
+    if (!up.ok) console.error("host PIN store failed:", (await up.text()).slice(0, 120));
+    else console.log("Host PIN set. Desktop sessions will ask for it (pairing can remember).");
+  }
+}
 
 console.log(`Paired as '${username}' (id ${userId}). .env.local updated.`);
 console.log("\n--- Paste these into Vercel → Project → Settings → Environment Variables ---");

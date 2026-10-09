@@ -59,6 +59,8 @@ async def main():
         iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")]))
     got_channel = asyncio.Event()
     got_clip = asyncio.Event()
+    need_pin = asyncio.Event()
+    verified = asyncio.Event()
     frames = []
 
     @pc.on("datachannel")
@@ -74,15 +76,36 @@ async def main():
 
     @dc.on("message")
     def _msg(m):
+        import hashlib
         try:
-            if json.loads(m).get("t") == "clip":
+            o = json.loads(m)
+            if o.get("t") == "clip":
                 got_clip.set()
-        except Exception:
-            pass
+            elif o.get("t") == "pin-req":
+                need_pin.set()
+                # host PIN gate: prove possession without revealing the PIN on signaling
+                test_pin = os.environ.get("AURA_TEST_PIN", "")
+                if not test_pin:
+                    print("PIN required but AURA_TEST_PIN unset")
+                    return
+                key = hashlib.pbkdf2_hmac("sha256", test_pin.encode(),
+                                          bytes.fromhex(o["salt"]), o["iters"], 32).hex()
+                dc.send(json.dumps({"t": "pin-key", "key": key, "nonce": o["nonce"]}))
+            elif o.get("t") == "pin-ok":
+                verified.set()
+        except Exception as e:
+            print("msg err", e)
 
     @pc.on("track")
     def on_track(track):
         async def consume():
+            # gate: pin-ok, or 3s of open channel with no pin-req (open mode)
+            try:
+                await asyncio.wait_for(verified.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                if need_pin.is_set():
+                    print("PIN gate blocked (wrong/missing AURA_TEST_PIN?)")
+                    return
             t0 = time.monotonic()
             while time.monotonic() - t0 < 6:
                 try:

@@ -11,6 +11,7 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "Not logged in." }, { status: 401 });
   await store.revokeAllSessions(user.id).catch(() => {});
   await store.deleteAgent(user.id);
+  await store.deletePairings(user.id);
   store.audit("auth.revoke-all", "kill switch used", user.id, clientIp(req));
   const res = NextResponse.json({ ok: true, revoked: true });
   res.cookies.set(SESSION_COOKIE, "", { httpOnly: true, path: "/", maxAge: 0 });

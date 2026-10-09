@@ -3,6 +3,17 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 const STUN = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+function iceConfig(): RTCConfiguration {
+  // Optional TURN for symmetric NATs: NEXT_PUBLIC_ICE='[{"urls":"turn:h:3478","username":"u","credential":"p"}]'
+  try {
+    const raw = process.env.NEXT_PUBLIC_ICE || "";
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) return { iceServers: arr };
+    }
+  } catch {}
+  return { iceServers: STUN };
+}
 const PROFILES = ["Auto", "720p", "720p60", "1080p", "Highest"] as const;
 const LADDER = ["720p", "720p60", "1080p", "Highest"];
 const toAgentName = (p: string) => ({ Auto: "auto", "720p": "720p", "720p60": "720p60", "1080p": "1080p", Highest: "highest" }[p]);
@@ -27,6 +38,12 @@ export default function Desktop() {
   const [showStats, setShowStats] = useState(true);
   const [control, setControl] = useState(true);
   const [clip, setClip] = useState<string | null>(null);
+  const [pin, setPin] = useState("");
+  const [remember, setRemember] = useState(true);
+  const [pinReq, setPinReq] = useState<{ salt: string; iters: number; nonce: string } | null>(null);
+  const [pinErr, setPinErr] = useState("");
+  const [verified, setVerified] = useState(false);
+  const verifiedRef = useRef(false);
   const qualityRef = useRef(quality);
   qualityRef.current = quality;
 
@@ -65,22 +82,42 @@ export default function Desktop() {
       const code = crypto.randomUUID();
       codeRef.current = code;
       afterRef.current = 0;
-      const pc = new RTCPeerConnection({ iceServers: STUN });
+      const pc = new RTCPeerConnection(iceConfig());
       pcRef.current = pc;
       pc.addTransceiver("video", { direction: "recvonly" });
 
       const dc = pc.createDataChannel("aura-input");
       dcRef.current = dc;
       dc.onopen = () => {
-        setStatus("live");
-        setProfile(qualityRef.current === "Auto" ? "720p" : qualityRef.current);
+        setStatus("verifying…");
+        // video stays black + input locked until the host accepts PIN/pairing
       };
-      dc.onmessage = (e) => {
+      dc.onmessage = async (e) => {
         try {
           const m = JSON.parse(e.data);
           if (m.t === "clip") {
             setClip(String(m.text || "").slice(0, 100000));
             navigator.clipboard?.writeText(String(m.text || "")).catch(() => {});
+          } else if (m.t === "pin-req") {
+            // paired device? try token first, else ask for the host PIN
+            const saved = localStorage.getItem("aura-pair-token");
+            if (saved) {
+              dc.send(JSON.stringify({ t: "pair", token: saved }));
+            } else {
+              setPinReq({ salt: m.salt, iters: m.iters, nonce: m.nonce });
+              setStatus("pin required");
+            }
+          } else if (m.t === "pin-ok") {
+            if (m.token) localStorage.setItem("aura-pair-token", m.token);
+            verifiedRef.current = true;
+            setVerified(true);
+            setPinReq(null);
+            setPinErr("");
+            setStatus("live");
+            setProfile(qualityRef.current === "Auto" ? "720p" : qualityRef.current);
+          } else if (m.t === "pin-no") {
+            localStorage.removeItem("aura-pair-token");
+            setPinErr(`Wrong PIN${m.left != null ? ` — ${m.left} tries left` : ""}.`);
           }
         } catch {}
       };
@@ -184,6 +221,31 @@ export default function Desktop() {
     }
   }
 
+  async function submitPin(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pinReq || !pin) return;
+    setPinErr("");
+    try {
+      const enc = new TextEncoder();
+      const base = await crypto.subtle.importKey("raw", enc.encode(pin), "PBKDF2", false, ["deriveBits"]);
+      const salt = Uint8Array.from(Buffer.from(pinReq.salt, "hex"));
+      const bits = await crypto.subtle.deriveBits(
+        { name: "PBKDF2", salt, iterations: pinReq.iters, hash: "SHA-256" },
+        base,
+        256
+      );
+      const key = Buffer.from(bits).toString("hex");
+      const dc = dcRef.current;
+      if (dc && dc.readyState === "open") {
+        dc.send(JSON.stringify({ t: "pin-key", key, nonce: pinReq.nonce, remember }));
+        setStatus("verifying…");
+      }
+      setPin("");
+    } catch {
+      setPinErr("This browser blocked crypto. Use Chrome/Edge.");
+    }
+  }
+
   async function stop() {
     if (pollRef.current) clearInterval(pollRef.current);
     if (statsTimer) clearInterval(statsTimer);
@@ -198,6 +260,10 @@ export default function Desktop() {
     pcRef.current = null;
     dcRef.current = null;
     codeRef.current = "";
+    verifiedRef.current = false;
+    setVerified(false);
+    setPinReq(null);
+    setPin("");
     setStatus("idle");
   }
 
@@ -238,11 +304,35 @@ export default function Desktop() {
               if (text) sendInput({ t: "clip-set", text: text.slice(0, 5000) });
             }
           }} title="Type local text at the remote cursor (explicit)">Paste remote ➡</button>
-          {status === "live" ? <button className="danger" onClick={stop}>Disconnect</button>
-            : <button onClick={start}>Connect</button>}
+          {status === "live" || status.startsWith("verifying") || status === "pin required" ? (
+            <span className="row">
+              <button className="danger" onClick={stop}>Disconnect</button>
+              <button className="ghost" onClick={async () => { await stop(); await start(); }} title="Fresh ICE + new session">Reconnect</button>
+            </span>
+          ) : <button onClick={start}>Connect</button>}
           <button className="ghost" onClick={() => router.push("/files")}>Files</button>
         </div>
       </div>
+
+      {pinReq && !verified && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}
+          onClick={() => {}}>
+          <form onSubmit={submitPin} className="card" style={{ width: 340 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Host PIN</h3>
+            <p className="muted" style={{ fontSize: 13 }}>This PC is locked. Enter the PIN you set on the host. It never leaves this browser in plaintext.</p>
+            <input type="password" placeholder="••••••" value={pin} onChange={(e) => setPin(e.target.value)} autoFocus style={{ width: "100%", marginBottom: 10 }} />
+            <label className="row muted" style={{ fontSize: 13, marginBottom: 10 }}>
+              <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ width: 16 }} />
+              Remember this device
+            </label>
+            <button style={{ width: "100%" }}>Unlock</button>
+            {pinErr && <p className="err">{pinErr}</p>}
+            <p className="row" style={{ marginTop: 10 }}>
+              <button type="button" className="ghost" onClick={stop}>Cancel</button>
+            </p>
+          </form>
+        </div>
+      )}
 
       {err && <p className="err">{err}</p>}
 

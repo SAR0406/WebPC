@@ -227,6 +227,38 @@ export const store = {
     });
   },
 
+  async getHostPin(userId: number): Promise<{ salt: string; verifier: string; iters: number } | null> {
+    const rows = await sb<any[]>(`/aura_host_pin?user_id=eq.${userId}&select=salt,verifier,iters&limit=1`);
+    return rows[0] || null;
+  },
+
+  async setHostPin(userId: number, salt: string, verifier: string, iters: number): Promise<void> {
+    await sb("/aura_host_pin", {
+      method: "POST",
+      prefer: "resolution=merge-duplicates,return=minimal",
+      body: { user_id: userId, salt, verifier, iters, updated_at: new Date().toISOString() },
+    });
+  },
+
+  async addPairing(userId: number, tokenHash: string, label: string): Promise<void> {
+    await sb("/aura_pairings", {
+      method: "POST",
+      prefer: "resolution=merge-duplicates,return=minimal",
+      body: { user_id: userId, token_hash: tokenHash, label: label.slice(0, 80) },
+    });
+  },
+
+  async findPairing(userId: number, tokenHash: string): Promise<boolean> {
+    const rows = await sb<any[]>(
+      `/aura_pairings?user_id=eq.${userId}&token_hash=eq.${encodeURIComponent(tokenHash)}&select=id&limit=1`
+    );
+    return (rows || []).length > 0;
+  },
+
+  async deletePairings(userId: number): Promise<void> {
+    await sb(`/aura_pairings?user_id=eq.${userId}`, { method: "DELETE" }).catch(() => null);
+  },
+
   audit(action: string, detail = "", userId: number | null = null, ip = ""): void {
     // Fire-and-forget: audit must never break requests.
     sb("/aura_audit", {
