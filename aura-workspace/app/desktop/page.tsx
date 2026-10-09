@@ -66,6 +66,7 @@ export default function Desktop() {
       afterRef.current = 0;
       const pc = new RTCPeerConnection({ iceServers: STUN });
       pcRef.current = pc;
+      pc.addTransceiver("video", { direction: "recvonly" });
 
       const dc = pc.createDataChannel("aura-input");
       dcRef.current = dc;

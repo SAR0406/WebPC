@@ -66,6 +66,7 @@ async def main():
         pass  # viewer creates the channel; streamer handles it
 
     dc = pc.createDataChannel("aura-input")
+    pc.addTransceiver("video", direction="recvonly")
 
     @dc.on("open")
     def _open():

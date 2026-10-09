@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 
 import numpy as np
-from mss import mss
+from mss import MSS
 
 import av
 
@@ -127,7 +127,7 @@ class ScreenTrack(MediaStreamTrack):
 
     def __init__(self):
         super().__init__()
-        self.sct = mss()
+        self.sct = MSS()
         self.mon = self.sct.monitors[1]  # primary
         self.host_w, self.host_h = self.mon["width"], self.mon["height"]
         self.input = Input(self.host_w, self.host_h)
@@ -277,6 +277,13 @@ async def serve_offer(code, offer_b64):
     pc.addTrack(track)
     offer = RTCSessionDescription(sdp=base64.b64decode(offer_b64).decode(), type="offer")
     await pc.setRemoteDescription(offer)
+    # Re-assert sendonly: the offer is recvonly, so bind explicitly.
+    for t in pc.getTransceivers():
+        if t.sender.track is track and t.direction in (None, "recvonly"):
+            try:
+                t.direction = "sendonly"
+            except Exception:
+                pass
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     await post_signal(code, "answer",
