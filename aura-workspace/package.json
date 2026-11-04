@@ -15,7 +15,7 @@
     "desktop": "node scripts/desktop.mjs"
   },
   "dependencies": {
-    "next": "^15.5.4",
+    "next": "^16.4.5",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
